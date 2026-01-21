@@ -13,64 +13,161 @@ import numpy as np
 
 from datasets import Dataset, DatasetDict, load_dataset, load_from_disk
 from huggingface_hub import snapshot_download
-sub_instruct_cd1="""
-write the narrative in the context of credit-card delinquency/default risk. If the input includes any payment-history, utilization, statement/billing, or credit-limit related fields, explicitly describe repayment behavior consistency, revolving balance pressure, and any signs of recent stress using the exact feature_name=value pairs. Avoid inventing field semantics that are not clearly implied by the feature names; when fields look like identifiers (e.g., id-like), mention them as identifiers only.
+
+sub_instruct_cd1 = """
+Write one continuous English paragraph as a credit-card delinquency and default risk narrative. The paragraph must be analysis-dominant: interpret what the provided values may suggest about repayment pressure, delinquency likelihood, and recent stress using cautious analyst language (may indicate, can signal, is often associated with). Include both potential strengths and potential concerns, and include explicit contrasts (e.g., while ..., however ...) without giving a final verdict.
+
+If payment-history, utilization, statement or billing, or credit-limit related fields are present, explicitly discuss repayment consistency and timeliness, revolving balance pressure relative to stated limit capacity, and any signs of recent stress, grounding each interpretation in the specific numbers and categories shown in the input.
+
+Avoid inventing meanings that are not reasonably implied by the field names. If a field appears to be an identifier, you may mention it briefly as a reference only and do not treat it as a risk driver.
 """
-sub_instruct_cd2="""
- treat the narrative as a monthly credit-card repayment risk profile. If present, explicitly contextualize LIMIT_BAL, PAY_0/PAY_2… style repayment-status fields, BILL_AMT* statement balances, and PAY_AMT* repayment amounts by describing whether repayment appears timely, whether balances are building, and whether payment amounts appear sufficient relative to billed amounts, always citing exact feature_name=value. If demographic fields like SEX/EDUCATION/MARRIAGE/AGE appear, mention them neutrally as background context without stereotypes. Do not output any decision or probability.
+
+sub_instruct_cd2 = """
+Write one continuous English paragraph as a monthly credit-card repayment risk profile. The paragraph must be analysis-dominant and value-grounded: interpret the provided monthly values to describe possible repayment behavior and pressure, including both supportive signals and risk signals, with at least two explicit contrasts, and no final verdict.
+
+If present, contextualize LIMIT_BAL as stated limit capacity, PAY_0, PAY_2 and similar repayment-status fields as monthly repayment status indicators, BILL_AMT fields as statement balances, and PAY_AMT fields as repayment amounts. Discuss whether repayment appears timely, whether balances appear to be building across months, and whether payment amounts appear sufficient relative to billed amounts, explicitly referencing the values you are interpreting.
+
+If demographic fields such as SEX, EDUCATION, MARRIAGE, or AGE appear, include them neutrally as background context only, without stereotypes or causal claims. Do not output any decision, probability, or overall risk label.
 """
-sub_instruct_ld1="""
-frame the narrative as a home-equity underwriting risk summary. If present, explicitly describe collateral/coverage signals (e.g., LOAN, MORTDUE, VALUE), capacity signals (e.g., DEBTINC), stability signals (e.g., YOJ, JOB), and credit-adversity signals (e.g., DEROG, DELINQ, NINQ, CLAGE, CLNO) using exact feature_name=value. When you see REASON, interpret it only as the stated loan purpose category without adding extra claims. Keep a neutral, compliance-friendly tone and avoid making an approval/decline decision.
+
+sub_instruct_ld1 = """
+Write one continuous English paragraph framed as a home-equity underwriting risk summary. The paragraph must be analysis-dominant and grounded in the provided values: discuss potential collateral coverage, affordability, stability, and credit adversity signals using cautious language, include both strengths and concerns, and use explicit contrasts, without a final verdict.
+
+If present, interpret collateral and coverage fields such as LOAN, MORTDUE, and VALUE by discussing relative coverage and potential equity buffer using the stated amounts. Interpret capacity fields such as DEBTINC as affordability pressure, stability fields such as YOJ and JOB as employment and tenure context, and credit-adversity fields such as DEROG, DELINQ, NINQ, CLAGE, and CLNO as adverse history, delinquency, inquiry intensity, credit age, and account depth context consistent with their names, without adding extra semantics beyond what the field names reasonably imply.
+
+If REASON appears, treat it only as the stated purpose category and interpret it only at that level, without inventing applicant-specific stories. Keep a neutral, compliance-friendly tone and avoid any approval or decline decision.
 """
-sub_instruct_ld2="""
-write the narrative as a consumer-loan risk profile emphasizing affordability and credit quality. If present, explicitly connect person_income with loan_amnt, loan_int_rate, and loan_percent_income (or similarly named affordability ratios) by describing payment burden pressure, always using exact feature_name=value. If loan_grade or loan_intent appears, mention them as underwriting segmentation/purpose signals only. If cb_person_default_on_file and cb_person_cred_hist_length appear, describe them as credit-history depth/adverse-record indicators without over-interpreting.
+
+sub_instruct_ld2 = """
+Write one continuous English paragraph as a consumer-loan risk profile emphasizing affordability and credit quality. The paragraph must be analysis-dominant and grounded in the provided values: connect the stated income, loan terms, and ratios to payment burden pressure and risk sensitivity using cautious language, include both mitigating and risk signals, and include explicit contrasts, without a final verdict.
+
+If present, explicitly connect person_income with loan_amnt, loan_int_rate, and loan_percent_income or similarly named affordability ratios by describing potential payment burden and rate-driven cost sensitivity, referencing the specific values you are interpreting.
+
+If loan_grade or loan_intent appears, mention it as underwriting segmentation or purpose context only, not as a deterministic label. If cb_person_default_on_file and cb_person_cred_hist_length appear, describe them as adverse record and credit history depth context consistent with their names, without over-interpreting beyond what the fields suggest.
 """
-sub_instruct_ld3="""
-describe risk in a “first-instalment performance” context. If the input includes loan structure and collateral coverage fields (e.g., ltv-like, asset_cost-like, disbursed_amount-like names), explicitly describe first-payment stress and leverage using exact feature_name=value. If identity/document flags or verification indicators appear (flag-like names), describe documentation completeness/verification strength cautiously and neutrally. If bureau score / account count / delinquency-history style fields appear, summarize credit depth and recent stress without assuming meanings beyond what feature names suggest.
+
+sub_instruct_ld3 = """
+Write one continuous English paragraph describing risk in a first-instalment performance context. The paragraph must be analysis-dominant and grounded in the provided values: interpret what the loan structure, leverage, coverage, and verification indicators may suggest about early payment stress using cautious language, include both strengths and concerns, and use explicit contrasts, without a final verdict.
+
+If loan structure and collateral coverage fields appear (for example, ltv-like, asset_cost-like, disbursed_amount-like names), discuss leverage and coverage and how the stated ratios and amounts could relate to first-payment stress, explicitly referencing the values shown.
+
+If identity or document flags, verification indicators, or similar fields appear, interpret them as documentation and verification strength or weakness cautiously, based only on what the field names and values suggest.
+
+If bureau score, account count, or delinquency-history style fields appear, summarize credit depth and recent stress as suggested by the field names, grounded in the stated values.
 """
-sub_instruct_cf1="""
-write the narrative at the transaction level. If present, explicitly mention Time and Amount as transaction-timing and transaction-size context using exact feature_name=value. For V1–V28 (or similarly anonymized components), do not invent semantic meanings; instead describe them as anonymized signal patterns and note whether the combination appears unusual or extreme, while still listing exact feature_name=value in the text. Emphasize that this is fraud-risk screening, not creditworthiness.
+
+sub_instruct_cf1 = """
+Write one continuous English paragraph at the transaction level for fraud-risk screening, not creditworthiness. The paragraph must be analysis-dominant and grounded in the provided values: interpret what the timing, amount, and anonymized signals may suggest about normal versus unusual activity using cautious language, include both benign context and risk signals, and use explicit contrasts, without a final verdict.
+
+If present, mention Time and Amount as transaction timing and transaction size context, and interpret their magnitude only relative to the other provided fields, without introducing external baselines.
+
+For V1 to V28 or similarly anonymized components, do not invent real-world meanings. Treat them as anonymized signal components and describe whether the observed combination appears extreme or unusual versus internally consistent, explicitly referring to the provided values when making that judgment.
 """
-sub_instruct_cf2="""
-adapt to whatever schema appears in the input: identify the transaction identifiers, timing/amount-like fields, merchant/channel/location-like fields, and any fraud/label-like indicator purely by their feature names. Do not assume the label name (it might be Class, fraud, is_fraud, etc.); if it is provided among features, mention it neutrally as the observed outcome field. Keep the narrative transaction-centric and avoid credit-default language unless the schema clearly indicates default rather than fraud.
+
+sub_instruct_cf2 = """
+Write one continuous English paragraph that adapts to whatever schema appears in the input, staying transaction-centric. The paragraph must be analysis-dominant and grounded in the provided values: identify likely identifiers, timing and amount fields, merchant, channel, or location fields, and any outcome-like field purely from field names, then interpret only what the names and values support. Include both potential benign context and risk signals, with explicit contrasts, and no final verdict.
+
+Do not assume the outcome field name. If an outcome-like field is present, mention it neutrally as a recorded field, and keep the paragraph focused on the transaction context and signals implied by the other fields.
+
+Avoid credit-default language unless the schema clearly indicates default rather than fraud.
 """
-sub_instruct_cc1="""
-frame the narrative as a retention-risk profile over a six-month horizon. If the input includes engagement/usage intensity, balance/relationship depth, tenure/vintage, product holding, or service interaction fields, describe signs of weakening engagement or dissatisfaction using exact feature_name=value. Avoid claiming “will churn” or “will not churn”; describe only risk signals and current state reflected by the features.
+
+sub_instruct_cc1 = """
+Write one continuous English paragraph framed as a retention-risk profile over a six-month horizon. The paragraph must be analysis-dominant and grounded in the provided values: interpret what engagement, tenure, balance, product holding, and service interaction values may suggest about retention strength versus churn pressure using cautious language, include both strengths and concerns, and use explicit contrasts, without a final verdict.
+
+If present, discuss engagement and usage intensity, relationship depth, tenure and vintage, product holding, and service interactions by describing signs of strengthening versus weakening engagement, price sensitivity, or dissatisfaction, grounded in the stated values and field names.
+
+Avoid deterministic claims such as will churn or will not churn.
 """
-sub_instruct_cc2="""
-write the narrative as a retail-banking relationship summary. If present, explicitly describe relationship depth and stickiness using Tenure, Balance, NumOfProducts, HasCrCard, IsActiveMember, and EstimatedSalary (or similar) with exact feature_name=value. If RowNumber/CustomerId/Surname appear, mention them as identifiers with no behavioral interpretation. If Exited appears, treat it as an observed churn outcome field and mention it neutrally without turning the output into a label prediction.
+
+sub_instruct_cc2 = """
+Write one continuous English paragraph as a retail-banking relationship summary. The paragraph must be analysis-dominant and grounded in the provided values: interpret what relationship depth, activity, tenure, and salary context may suggest about stickiness versus attrition pressure using cautious language, include both strengths and concerns, and use explicit contrasts, without a final verdict.
+
+If present, discuss Tenure, Balance, NumOfProducts, HasCrCard, IsActiveMember, and EstimatedSalary or similarly named fields as relationship depth, activity, and affordability context, referencing the specific values shown.
+
+If RowNumber, CustomerId, or Surname appear, you may mention them briefly as record references and do not treat them as behavioral drivers.
+
+If Exited appears, mention it neutrally as a recorded field and keep the paragraph focused on describing the relationship signals in the other fields.
 """
-sub_instruct_cc3="""
-write the narrative as a subscription/service retention profile. If present, explicitly describe tenure and billing pressure using tenure-related, MonthlyCharges, and TotalCharges fields with exact feature_name=value. If service bundle fields appear (phone/internet/add-ons) or contract/payment method fields appear, describe potential switching risk and price sensitivity cautiously, grounded only in feature names. If Churn appears, mention it neutrally as the recorded churn status, not as a model decision.
+
+sub_instruct_cc3 = """
+Write one continuous English paragraph as a subscription or service retention profile. The paragraph must be analysis-dominant and grounded in the provided values: interpret what tenure and billing, service-bundle, and contract signals may suggest about retention versus switching pressure using cautious language, include both strengths and concerns, and use explicit contrasts, without a final verdict.
+
+If present, discuss tenure-related fields, MonthlyCharges, and TotalCharges as tenure stability and billing pressure context, grounded in the stated values.
+
+If service bundle fields such as phone, internet, and add-ons or contract and payment method fields appear, describe potential switching risk and price sensitivity cautiously, based only on what the field names and values suggest.
+
+If Churn appears, mention it neutrally as a recorded field, not as a model decision.
 """
+
 system_instruct="""
-You are a senior credit risk analyst. Convert the applicant’s structured risk-control features into ONE coherent English narrative paragraph for model training.
+You are a senior financial risk analyst. Convert the applicant's structured risk-control features into ONE coherent English narrative paragraph for model training. 
 """
-base_instruct= system_instruct+"""
+base_instruct= """
 
 
 Hard requirements:
 
 Output plain text only (no JSON, no markdown, no bullet points).
 
-The narrative must be natural, professional, and realistic in a financial risk-control context.
+Write exactly ONE continuous English paragraph (no headings, no line breaks, no list formatting).
 
-You must explicitly include the exact feature names and their corresponding feature values exactly as they appear in the input.
+The paragraph must be natural, professional, and realistic in a financial risk-control context, and it must read like a credit analyst's narrative.
 
-Do not rename, translate, or paraphrase feature keys. Keep them verbatim (for example, days_of_employment, contract_type).
+Coverage requirements:
 
-Do not invent or infer any information that is not supported by the provided features.
+You may rewrite feature names into natural language (you do NOT need to keep feature keys verbatim), but you must incorporate EVERY provided feature value and ensure every provided feature is referenced at least once.
+
+Do not invent any applicant facts that are not supported by the provided features (no new fields, no fabricated history, no unstated behaviors).
 
 If a feature is missing, null, or not provided, do NOT mention it at all.
 
-Every feature that appears in the input must be mentioned at least once in the narrative.
+Core requirement (analysis-focused; this is the priority):
 
-You may group features logically (demographics, income and repayment pressure, employment stability, residence and assets, credit bureau behavior, social and communication signals, regional consistency, application behavior, document completeness), but all content must be written as a single continuous paragraph.
+This is NOT a pure feature restatement. The paragraph must be dominated by analysis and interpretation grounded in the provided values.
+
+For each feature (or coherent feature group), explicitly explain what the specific value(s) may imply about delinquency/default risk using cautious analyst language (e.g., "may indicate," "is often associated with," "can signal," "could be consistent with," "may reduce/increase uncertainty," "may be a mitigating factor," "may introduce risk").
+
+Balanced view is required:
+
+Include both potential strengths/mitigating signals and potential risks/uncertainties suggested by the values, and explicitly connect them to the same applicant (e.g., "this may be supportive…, however it may also…").
+
+Mandatory contrasts and interactions:
+
+Include at least THREE explicit contrast/interactions in-sentence using connectors such as "while…," "however…," "whereas…," "on the other hand…," linking:
+- a supportive value vs a concerning/uncertain value, and/or
+- one feature's implication vs another feature's implication,
+and make these contrasts directly grounded in the provided values (not generic).
+
+Value-anchoring rule (prevents empty commentary):
+
+Every analytical clause must cite at least one concrete provided value (a number or category) in the same sentence, so the analysis is visibly "based on data" rather than generic.
+
+Context handling:
+
+If the features describe a product that differs from the training target (e.g., car loan vs credit-card delinquency), explicitly acknowledge the mismatch in one short clause and interpret only what the provided values can support (do not introduce revolving-credit behaviors unless such fields exist).
+
+Prohibited outputs:
+
+Do not output any approval/decline decision, overall risk label, probability, or score, and do not conclude with a final verdict (no "overall risk is high/low," no "therefore approve/decline").
+
+Output constraint (to avoid useless meta text, but keep analysis):
+
+Do not include task restatements or template boilerplate (e.g., "We are given…", "The input features are…", "Constraints: …"). Use the entire paragraph for the applicant narrative and the background analysis itself.
 
 
 """
 instruct_dic={"cd1":sub_instruct_cd1, "cd2":sub_instruct_cd2, "ld1":sub_instruct_ld1, "ld2":sub_instruct_ld2, "ld3":sub_instruct_ld3, "cf1":sub_instruct_cf1, "cf2":sub_instruct_cf2, "cc1":sub_instruct_cc1, "cc2":sub_instruct_cc2, "cc3":sub_instruct_cc3}
+end_instruct="""
+                    Do not output any approval, rejection, score, probability, or risk label.
 
+                    Input:
+                    You will receive financial features as input.
+
+                    Now generate one narrative paragraph using the following input.
+                    """
+def get_instruction(ds_name):
+    return system_instruct+ instruct_dic[ds_name]+ base_instruct + end_instruct 
 def convert_finbench_to_local_dataset(snapshot_path, ds_name, local_cache_dir, logger):
     """
     Convert yuweiyin/FinBench raw files to local HuggingFace dataset format.
@@ -291,16 +388,7 @@ if __name__ == "__main__":
                     # num_features = instance["num_features"]  # int (The total number of features)
                     assert len(X_ml_unscale) == len(num_idx) + len(cat_idx) == len(col_name)
                     # Construct the customer profiles
-                    instruction = base_instruct + instruct_dic[ds_name]+"""
-                    Do not output any approval, rejection, score, probability, or risk label.
-
-                    Do not explain your reasoning process or steps.
-
-                    Input:
-                    You will receive numerical_features and categorical_features as input.
-
-                    Now generate one narrative paragraph using the following input.
-                    """
+                    instruction = get_instruction(ds_name)
                     for col_idx, x in enumerate(X_ml_unscale):
                         cur_col_name = col_name[col_idx]
                         if ds_name == "cf3" and cur_col_name[:2] == "x_":
