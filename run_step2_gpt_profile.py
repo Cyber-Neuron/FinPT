@@ -14,6 +14,10 @@ import time
 from openai import AsyncOpenAI
 from run_step1_get_instruction import system_instruct
 
+# All available datasets and splits
+ALL_DATASETS = ["cd1", "cd2", "ld1", "ld2", "ld3", "cf1", "cf2", "cc1", "cc2", "cc3"]
+ALL_SPLITS = ["train", "validation", "test"]
+
 async def process_single_request(client, instruction: str, line_idx: int):
     """Process a single OpenAI API request asynchronously"""
     start_time = time.time()
@@ -174,6 +178,9 @@ if __name__ == "__main__":
     python3 run_step2_gpt_profile.py --ds_name cd1 --ds_split train --start_idx 0 --end_idx -1 --batch_size 10
     python3 run_step2_gpt_profile.py --ds_name cd1 --ds_split validation --start_idx 0 --end_idx -1 --batch_size 10
     python3 run_step2_gpt_profile.py --ds_name cd1 --ds_split test --start_idx 0 --end_idx -1 --batch_size 10
+    python3 run_step2_gpt_profile.py --ds_name all --ds_split train --start_idx 0 --end_idx -1 --batch_size 10
+    python3 run_step2_gpt_profile.py --ds_name cd1 --ds_split all --start_idx 0 --end_idx -1 --batch_size 10
+    python3 run_step2_gpt_profile.py --ds_name all --ds_split all --start_idx 0 --end_idx -1 --batch_size 10
     """
 
     logging.basicConfig(
@@ -183,8 +190,8 @@ if __name__ == "__main__":
     logger = logging.getLogger(__name__)
 
     parser = argparse.ArgumentParser(description="Step2 Get_Profile Args")
-    parser.add_argument("--ds_name", type=str, default="cf1", help="Specify which dataset to use")
-    parser.add_argument("--ds_split", type=str, default="train", help="train OR validation OR test")
+    parser.add_argument("--ds_name", type=str, default="cf1", help="Specify which dataset to use (or 'all' for all datasets)")
+    parser.add_argument("--ds_split", type=str, default="train", help="train OR validation OR test (or 'all' for all splits)")
     parser.add_argument("--start_idx", type=int, default=0, help="Start index for continue generating")
     parser.add_argument("--end_idx", type=int, default=-1, help="Ending index for continue generating")
     parser.add_argument("--batch_size", type=int, default=10, help="Batch size for concurrent requests")
@@ -197,6 +204,17 @@ if __name__ == "__main__":
     start_idx = int(args.start_idx)
     end_idx = int(args.end_idx)
     batch_size = int(args.batch_size)
+    
+    # Determine which datasets and splits to run
+    if ds_name == "all":
+        datasets_to_run = ALL_DATASETS
+    else:
+        datasets_to_run = [ds_name]
+    
+    if ds_split == "all":
+        splits_to_run = ALL_SPLITS
+    else:
+        splits_to_run = [ds_split]
 
     cache_dir = "~/.cache/huggingface/"
     os.environ["TRANSFORMERS_CACHE"] = cache_dir
@@ -217,8 +235,26 @@ if __name__ == "__main__":
     profile_root_dir = os.path.join("./data/profile")
     os.makedirs(profile_root_dir, exist_ok=True)
 
-    # Run async function
-    asyncio.run(run_openai(client, ds_name=ds_name, ds_split=ds_split, 
-                           start_idx=start_idx, end_idx=end_idx, batch_size=batch_size))
+    # Run for all combinations
+    total_combinations = len(datasets_to_run) * len(splits_to_run)
+    current = 0
+    
+    logger.info(f"\n>>> Running {total_combinations} combinations: {len(datasets_to_run)} datasets × {len(splits_to_run)} splits")
+    logger.info(f">>> Datasets: {datasets_to_run}")
+    logger.info(f">>> Splits: {splits_to_run}\n")
+    
+    for cur_ds_name in datasets_to_run:
+        for cur_ds_split in splits_to_run:
+            current += 1
+            logger.info(f"\n>>> Progress: {current}/{total_combinations}")
+            try:
+                # Run async function
+                asyncio.run(run_openai(client, ds_name=cur_ds_name, ds_split=cur_ds_split, 
+                                       start_idx=start_idx, end_idx=end_idx, batch_size=batch_size))
+            except Exception as e:
+                logger.error(f">>> ERROR running {cur_ds_name}---{cur_ds_split}: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+                continue
 
     sys.exit(0)
