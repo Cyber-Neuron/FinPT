@@ -10,11 +10,13 @@ import json
 import logging
 import argparse
 import asyncio
+import time
 from openai import AsyncOpenAI
 from run_step1_get_instruction import system_instruct
 
 async def process_single_request(client, instruction: str, line_idx: int):
     """Process a single OpenAI API request asynchronously"""
+    start_time = time.time()
     try:
         response = await client.chat.completions.create(
             model="Qwen/Qwen3-4B-Thinking-2507",
@@ -23,11 +25,13 @@ async def process_single_request(client, instruction: str, line_idx: int):
                 {"role": "user", "content": f"{instruction}"},
             ],
         )
+        elapsed_time = time.time() - start_time
         res_content = response.choices[0].message.content
-        return line_idx, json.dumps(res_content.strip())
+        return line_idx, json.dumps(res_content.strip()), elapsed_time
     except Exception as e:
-        logger.error(f">>> Error processing line {line_idx}: {e}")
-        return line_idx, None
+        elapsed_time = time.time() - start_time
+        logger.error(f">>> Error processing line {line_idx}: {e} (took {elapsed_time:.2f}s)")
+        return line_idx, None, elapsed_time
 
 async def run_openai(client, ds_name: str, ds_split: str, start_idx: int = 0, end_idx: int = -1, batch_size: int = 10) -> int:
     # print_cnt = int(1e3)
@@ -67,6 +71,8 @@ async def run_openai(client, ds_name: str, ds_split: str, start_idx: int = 0, en
     
     # Process in batches and write incrementally to avoid data loss
     write_cnt = 0
+    all_latencies = []  # Track all request latencies for statistics
+    total_start_time = time.time()
     
     # Open file in append mode to write results incrementally
     with open(profile_path, mode="a+", encoding="utf-8") as fp_out:
@@ -74,6 +80,7 @@ async def run_openai(client, ds_name: str, ds_split: str, start_idx: int = 0, en
             batch_end = min(batch_start + batch_size, len(instructions_to_process))
             batch = instructions_to_process[batch_start:batch_end]
             
+            batch_start_time = time.time()
             logger.info(f">>> >>> Processing batch {batch_start // batch_size + 1} "
                        f"(lines {batch[0][0]}-{batch[-1][0]})")
             
@@ -85,16 +92,33 @@ async def run_openai(client, ds_name: str, ds_split: str, start_idx: int = 0, en
             
             # Execute batch concurrently
             batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            batch_elapsed_time = time.time() - batch_start_time
             
-            # Collect successful results from this batch
+            # Collect successful results from this batch and track latencies
             batch_results_dict = {}
+            batch_latencies = []
             for result in batch_results:
                 if isinstance(result, Exception):
                     logger.error(f">>> Exception in batch: {result}")
                     continue
-                line_idx, res_json = result
+                line_idx, res_json, latency = result
+                batch_latencies.append(latency)
+                all_latencies.append(latency)
                 if res_json is not None:
                     batch_results_dict[line_idx] = res_json
+            
+            # Calculate batch statistics
+            if batch_latencies:
+                avg_latency = sum(batch_latencies) / len(batch_latencies)
+                min_latency = min(batch_latencies)
+                max_latency = max(batch_latencies)
+                successful_count = len(batch_results_dict)
+                
+                logger.info(f">>> >>> Batch {batch_start // batch_size + 1} completed in {batch_elapsed_time:.2f}s | "
+                           f"Requests: {successful_count}/{len(batch)} | "
+                           f"Avg latency: {avg_latency:.2f}s | "
+                           f"Min: {min_latency:.2f}s | Max: {max_latency:.2f}s | "
+                           f"Throughput: {successful_count/batch_elapsed_time:.2f} req/s")
             
             # Write batch results immediately in order (sorted by line_idx)
             batch_results_sorted = sorted(batch_results_dict.items())
@@ -106,11 +130,42 @@ async def run_openai(client, ds_name: str, ds_split: str, start_idx: int = 0, en
             fp_out.flush()
             
             if (batch_start + batch_size) % print_cnt == 0 or batch_end == len(instructions_to_process):
-                logger.info(f">>> >>> [{ds_name} - {ds_split}] "
-                           f"processed: {batch_end}/{len(instructions_to_process)}; "
-                           f"written: {write_cnt}")
+                # Calculate overall statistics
+                total_elapsed = time.time() - total_start_time
+                if all_latencies:
+                    overall_avg = sum(all_latencies) / len(all_latencies)
+                    overall_min = min(all_latencies)
+                    overall_max = max(all_latencies)
+                    overall_throughput = write_cnt / total_elapsed if total_elapsed > 0 else 0
+                    
+                    logger.info(f">>> >>> [{ds_name} - {ds_split}] Progress Report:")
+                    logger.info(f">>> >>>   Processed: {batch_end}/{len(instructions_to_process)}; "
+                               f"Written: {write_cnt}")
+                    logger.info(f">>> >>>   Overall Stats - Avg latency: {overall_avg:.2f}s | "
+                               f"Min: {overall_min:.2f}s | Max: {overall_max:.2f}s | "
+                               f"Throughput: {overall_throughput:.2f} req/s | "
+                               f"Total time: {total_elapsed:.2f}s")
+    
+    total_elapsed = time.time() - total_start_time
 
-    logger.info(f"\n>>> DONE: [{ds_name} - {ds_split}] read_cnt = {read_cnt}; write_cnt = {write_cnt}\n\n")
+    # Calculate final statistics
+    if all_latencies:
+        overall_avg = sum(all_latencies) / len(all_latencies)
+        overall_min = min(all_latencies)
+        overall_max = max(all_latencies)
+        overall_throughput = write_cnt / total_elapsed if total_elapsed > 0 else 0
+        
+        logger.info(f"\n>>> DONE: [{ds_name} - {ds_split}]")
+        logger.info(f">>> Final Statistics:")
+        logger.info(f">>>   Total processed: {read_cnt}; Successfully written: {write_cnt}")
+        logger.info(f">>>   Total time: {total_elapsed:.2f}s ({total_elapsed/60:.2f} minutes)")
+        logger.info(f">>>   Average latency per request: {overall_avg:.2f}s")
+        logger.info(f">>>   Min latency: {overall_min:.2f}s | Max latency: {overall_max:.2f}s")
+        logger.info(f">>>   Overall throughput: {overall_throughput:.2f} requests/second")
+        logger.info(f">>>   Total requests tracked: {len(all_latencies)}\n\n")
+    else:
+        logger.info(f"\n>>> DONE: [{ds_name} - {ds_split}] read_cnt = {read_cnt}; write_cnt = {write_cnt}\n\n")
+    
     return 0
 
 
