@@ -371,6 +371,7 @@ if __name__ == "__main__":
     python3 run_step2_gpt_profile.py --ds_name cd1 --ds_split train --start_idx 0 --end_idx -1 --batch_size 32
     python3 run_step2_gpt_profile.py --ds_name cd1 --ds_split validation --start_idx 0 --end_idx -1 --batch_size 32 --lb_strategy round_robin
     python3 run_step2_gpt_profile.py --ds_name cd1 --ds_split test --start_idx 0 --end_idx -1 --batch_size 32 --lb_strategy least_requests
+    python3 run_step2_gpt_profile.py --ds_name cd1,cd2,ld1 --ds_split train --start_idx 0 --end_idx -1 --batch_size 32
     python3 run_step2_gpt_profile.py --ds_name all --ds_split train --start_idx 0 --end_idx -1 --batch_size 32
     python3 run_step2_gpt_profile.py --ds_name cd1 --ds_split all --start_idx 0 --end_idx -1 --batch_size 32
     python3 run_step2_gpt_profile.py --ds_name all --ds_split all --start_idx 0 --end_idx -1 --batch_size 32
@@ -383,7 +384,8 @@ if __name__ == "__main__":
     logger = logging.getLogger(__name__)
 
     parser = argparse.ArgumentParser(description="Step2 Get_Profile Args")
-    parser.add_argument("--ds_name", type=str, default="cf1", help="Specify which dataset to use (or 'all' for all datasets)")
+    parser.add_argument("--ds_name", type=str, default="cf1", 
+                       help="Specify which dataset(s) to use. Can be: a single dataset name, comma-separated list (e.g., 'cd1,cd2,ld1'), or 'all' for all datasets")
     parser.add_argument("--ds_split", type=str, default="train", help="train OR validation OR test (or 'all' for all splits)")
     parser.add_argument("--start_idx", type=int, default=0, help="Start index for continue generating")
     parser.add_argument("--end_idx", type=int, default=-1, help="Ending index for continue generating")
@@ -399,7 +401,7 @@ if __name__ == "__main__":
 
     logger.info(args)
 
-    ds_name = str(args.ds_name)
+    ds_name_input = str(args.ds_name)
     ds_split = str(args.ds_split)
     start_idx = int(args.start_idx)
     end_idx = int(args.end_idx)
@@ -423,10 +425,18 @@ if __name__ == "__main__":
         logger.info(f">>> batch_size ({batch_size}) is {batch_size/theoretical_max*100:.1f}% of theoretical max ({theoretical_max}) - safe")
     
     # Determine which datasets and splits to run
-    if ds_name == "all":
+    # Support: "all", single dataset name, or comma-separated list
+    if ds_name_input.lower() == "all":
         datasets_to_run = ALL_DATASETS
     else:
-        datasets_to_run = [ds_name]
+        # Parse comma-separated list and strip whitespace
+        datasets_to_run = [name.strip() for name in ds_name_input.split(",") if name.strip()]
+        # Validate that all specified datasets are in ALL_DATASETS
+        invalid_datasets = [ds for ds in datasets_to_run if ds not in ALL_DATASETS]
+        if invalid_datasets:
+            logger.error(f">>> ERROR: Invalid dataset name(s): {invalid_datasets}")
+            logger.error(f">>> Valid datasets are: {ALL_DATASETS}")
+            sys.exit(1)
     
     if ds_split == "all":
         splits_to_run = ALL_SPLITS
